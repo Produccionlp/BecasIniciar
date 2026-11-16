@@ -513,6 +513,22 @@ function contarPalabras(valores) {
   return [...m.entries()].sort((a, b) => b[1] - a[1]).slice(0, 45);
 }
 
+// Pregunta 2: la oración queda entera. Se agrupan las repetidas ignorando mayúsculas, tildes y signos,
+// y se muestra la primera forma escrita.
+function contarFrases(valores) {
+  const m = new Map();
+  valores.forEach(v => {
+    const txt = String(v).replace(/\s+/g, " ").trim();
+    const k = txt.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "")
+      .replace(/[.,;:!¡?¿"'()·]/g, "").replace(/\s+/g, " ").trim();
+    if (!k) return;
+    const e = m.get(k) || { texto: txt, n: 0 };
+    e.n++; m.set(k, e);
+  });
+  return [...m.values()].sort((a, b) => b.n - a.n).map(e => [e.texto, e.n]).slice(0, 40);
+}
+const contarRespuestas = (q, valores) => q.unaPalabra ? contarPalabras(valores) : contarFrases(valores);
+
 const personasEn = (qid, f) => new Set(f.filter(r => r.pregunta === qid).map(r => r.participante)).size;
 
 // Una entrada por participante: { id, Q1, Q2, fecha }
@@ -535,10 +551,10 @@ function porPersona(f) {
 let nubeDatos = null;
 
 function nubeHTML(q, f) {
-  const pal = contarPalabras(f.filter(r => r.pregunta === q.id).map(r => r.valor));
+  const pal = contarRespuestas(q, f.filter(r => r.pregunta === q.id).map(r => r.valor));
   if (!pal.length) { nubeDatos = null; return '<div class="nube-vacia pulso">esperando respuestas…</div>'; }
   // el dibujado real ocurre en disponerNube(), que necesita el ancho ya renderizado
-  nubeDatos = { pal, tope: pal[0][1] };
+  nubeDatos = { pal, tope: pal[0][1], frases: !q.unaPalabra };
   return '<div class="nube-lienzo" id="lienzo"></div>';
 }
 
@@ -602,14 +618,27 @@ function disponerNubeCrudo(intento) {
     return null;
   };
 
-  const poner = (texto, size, peso, color) => {
+  // frases: el texto se parte en renglones para que ninguna ocupe todo el ancho (collage)
+  const frases = nubeDatos.frases;
+  const poner = (texto, size, peso, color, ancho) => {
     ctx.font = peso + " " + size + 'px Hind, Arial, sans-serif';
-    const w = ctx.measureText(texto).width + 20, h = size * 1.14 + 10;
+    let lineas = [texto], tw = ctx.measureText(texto).width;
+    if (frases && tw > ancho) {
+      lineas = []; let act = "";
+      texto.split(" ").forEach(pal => {
+        const t = act ? act + " " + pal : pal;
+        if (act && ctx.measureText(t).width > ancho) { lineas.push(act); act = pal; } else act = t;
+      });
+      if (act) lineas.push(act);
+      tw = Math.max(...lineas.map(l => ctx.measureText(l).width));
+    }
+    const w = tw + 20, h = lineas.length * size * (frases ? 1.12 : 1.14) + 10;
     const p = ubicar(w, h);
     if (!p) return null;
     cajas.push({ x: p.x, y: p.y, w, h });
     const el = document.createElement("span");
-    el.textContent = texto;
+    el.textContent = lineas.join("\n");
+    if (frases) { el.style.whiteSpace = "pre"; el.style.textAlign = "center"; el.style.lineHeight = "1.12"; }
     el.style.left = Math.round(p.x + 10) + "px";
     el.style.top = Math.round(p.y + 5) + "px";
     el.style.fontSize = size + "px";
@@ -621,13 +650,15 @@ function disponerNubeCrudo(intento) {
 
   // 1) la/s líder/es al centro, con el cuerpo ajustado al ancho disponible
   const largo = Math.max(...lideres.map(([w]) => w.length));
-  const techo = lideres.length === 1 ? 132 : lideres.length === 2 ? 92 : 68;
-  const cuerpo = Math.round(Math.max(32, Math.min(techo,
-    (W - 60) / Math.min(lideres.length, 2) / (largo * 0.56), H * 0.42)));
+  const techo = frases ? (lideres.length === 1 ? 54 : 40) : (lideres.length === 1 ? 132 : lideres.length === 2 ? 92 : 68);
+  const cuerpo = frases
+    ? Math.round(Math.max(22, Math.min(techo, H * 0.12)))
+    : Math.round(Math.max(32, Math.min(techo,
+        (W - 60) / Math.min(lideres.length, 2) / (largo * 0.56), H * 0.42)));
 
   let caja = null;
   lideres.forEach(([w]) => {
-    const c = poner(w, cuerpo, 700, tonoNube(1, true));
+    const c = poner(w, cuerpo, 700, tonoNube(1, true), W * 0.5);
     if (c && (!caja || c.y + c.h > caja.y + caja.h)) caja = c;
   });
 
@@ -648,9 +679,9 @@ function disponerNubeCrudo(intento) {
   // 3) el resto, de más a menos mencionada
   resto.forEach(([w, n]) => {
     const k = n / tope;
-    const size = Math.round(15 + Math.pow(k, .62) * 42);
+    const size = frases ? Math.round(15 + Math.pow(k, .62) * 24) : Math.round(15 + Math.pow(k, .62) * 42);
     const peso = k >= .5 ? 700 : k >= .28 ? 600 : 500;
-    poner(w, size, peso, tonoNube(k, false));
+    poner(w, size, peso, tonoNube(k, false), W * 0.36);
   });
 }
 
@@ -957,18 +988,16 @@ function bloqueResumen(q) {
     <h2>${esc(q.texto)}</h2>`;
   if (!personas) return `<section class="bloque">${cab}<p class="vacio">Sin respuestas.</p></section>`;
 
-  const pal = contarPalabras(f.map(r => r.valor));
-  const top = pal.slice(0, 3), resto = pal.slice(3, 18);
-  const muestra = q.lista ? f.slice(-12).reverse() : [];
+  const pal = contarRespuestas(q, f.map(r => r.valor));
+  const top = pal.slice(0, 3), resto = pal.slice(3, q.unaPalabra ? 18 : 13);
+  const chico = q.unaPalabra ? "" : ' style="font-size:clamp(16px,1.7vw,21px)"';
   return `<section class="bloque">${cab}
     <div class="podio">${top.map(([w, n], k) => `
       <div><div class="pos">${k + 1}°</div>
-        <div class="pal">${esc(w)}</div>
+        <div class="pal"${chico}>${esc(w)}</div>
         <div class="n">${n} ${n === 1 ? "mención" : "menciones"}</div></div>`).join("")}</div>
-    ${resto.length ? `<p class="otras">También mencionadas: ${resto.map(([w, n]) =>
+    ${resto.length ? `<p class="otras">También ${q.unaPalabra ? "mencionadas" : "propuestas"}: ${resto.map(([w, n]) =>
       `<b>${esc(w)}</b> (${n})`).join(" · ")}</p>` : ""}
-    ${muestra.length ? `<div class="mensajes">${muestra.map(r => `<div class="mensaje">${esc(r.valor)}</div>`).join("")}</div>
-      ${f.length > 12 ? `<p class="otras" style="margin-top:12px">Se muestran 12 de ${f.length}. El resto está en el CSV.</p>` : ""}` : ""}
   </section>`;
 }
 
